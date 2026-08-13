@@ -1,6 +1,7 @@
 package com.example.abacustimer
 
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -11,12 +12,19 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.util.Locale
 
 data class SessionLog(
@@ -45,23 +53,28 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun AbacusTimerApp() {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
     var timeMillis by remember { mutableLongStateOf(0L) }
     var isRunning by remember { mutableStateOf(false) }
 
     var totalQuestionsText by remember { mutableStateOf("20") }
     var correctAnswersText by remember { mutableStateOf("18") }
+    var sheetUrl by remember { mutableStateOf("") }
+    var isSaving by remember { mutableStateOf(false) }
 
     val historyList = remember { mutableStateListOf<SessionLog>() }
 
     // Stopwatch loop
     LaunchedEffect(isRunning) {
         while (isRunning) {
-            delay(10) // Updates every 10ms
+            delay(10)
             timeMillis += 10
         }
     }
 
-    // Dynamic calculations
+    // Calculations
     val totalSecs = timeMillis / 1000.0
     val totalQ = totalQuestionsText.toIntOrNull() ?: 0
     val correctQ = correctAnswersText.toIntOrNull() ?: 0
@@ -88,7 +101,7 @@ fun AbacusTimerApp() {
             fontWeight = FontWeight.Bold
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Stopwatch Card
         Card(
@@ -98,7 +111,7 @@ fun AbacusTimerApp() {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(24.dp),
+                    .padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -109,7 +122,7 @@ fun AbacusTimerApp() {
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(
@@ -131,7 +144,7 @@ fun AbacusTimerApp() {
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Input Fields
         Row(
@@ -155,9 +168,21 @@ fun AbacusTimerApp() {
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Live Performance Metrics
+        // Google Sheet URL Input
+        OutlinedTextField(
+            value = sheetUrl,
+            onValueChange = { sheetUrl = it },
+            label = { Text("Google Sheet Web App URL") },
+            placeholder = { Text("Paste Web App URL here") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Metrics Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
@@ -165,7 +190,7 @@ fun AbacusTimerApp() {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(12.dp),
                 horizontalArrangement = Arrangement.SpaceAround
             ) {
                 MetricItem(label = "Accuracy", value = String.format(Locale.US, "%.1f%%", accuracy))
@@ -174,31 +199,62 @@ fun AbacusTimerApp() {
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
+        // Save Button
         Button(
             onClick = {
                 if (totalQ > 0) {
+                    val accStr = String.format(Locale.US, "%.1f%%", accuracy)
+                    val speedStr = String.format(Locale.US, "%.2fs/q", avgSpeed)
+                    val qpmStr = String.format(Locale.US, "%.1f", qpm)
+
+                    // Save locally
                     historyList.add(
                         0,
                         SessionLog(
                             timeFormatted = timerDisplay,
                             total = totalQ,
                             correct = correctQ,
-                            accuracy = String.format(Locale.US, "%.1f%%", accuracy),
-                            speed = String.format(Locale.US, "%.2fs/q", avgSpeed)
+                            accuracy = accStr,
+                            speed = speedStr
                         )
                     )
+
+                    // Sync to Google Sheet if URL provided
+                    if (sheetUrl.isNotBlank()) {
+                        isSaving = true
+                        coroutineScope.launch {
+                            val success = syncToGoogleSheet(
+                                webAppUrl = sheetUrl.trim(),
+                                time = timerDisplay,
+                                total = totalQ,
+                                correct = correctQ,
+                                accuracy = accStr,
+                                speed = speedStr,
+                                qpm = qpmStr
+                            )
+                            isSaving = false
+                            if (success) {
+                                Toast.makeText(context, "Saved to Google Sheet!", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Failed to save to Google Sheet", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } else {
+                        Toast.makeText(context, "Saved locally (Paste Sheet URL to sync online)", Toast.LENGTH_SHORT).show()
+                    }
                 }
             },
+            enabled = !isSaving,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Save Session to Log")
+            Text(if (isSaving) "Saving..." else "Save Session to Google Sheet")
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Session History List
+        // History Log
         Text(
             text = "Session History",
             style = MaterialTheme.typography.titleMedium,
@@ -206,7 +262,7 @@ fun AbacusTimerApp() {
             modifier = Modifier.align(Alignment.Start)
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         LazyColumn(modifier = Modifier.fillMaxWidth()) {
             items(historyList) { item ->
@@ -237,5 +293,41 @@ fun MetricItem(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(text = label, style = MaterialTheme.typography.labelMedium)
         Text(text = value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    }
+}
+
+// Background Network Request to Google Apps Script Web App
+suspend fun syncToGoogleSheet(
+    webAppUrl: String,
+    time: String,
+    total: Int,
+    correct: Int,
+    accuracy: String,
+    speed: String,
+    qpm: String
+): Boolean {
+    return withContext(Dispatchers.IO) {
+        try {
+            val queryParams = "time=${URLEncoder.encode(time, "UTF-8")}" +
+                    "&total=$total" +
+                    "&correct=$correct" +
+                    "&accuracy=${URLEncoder.encode(accuracy, "UTF-8")}" +
+                    "&speed=${URLEncoder.encode(speed, "UTF-8")}" +
+                    "&qpm=${URLEncoder.encode(qpm, "UTF-8")}"
+
+            val fullUrl = if (webAppUrl.contains("?")) "$webAppUrl&$queryParams" else "$webAppUrl?$queryParams"
+            val url = URL(fullUrl)
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.instanceFollowRedirects = true
+            connection.connectTimeout = 10000
+            connection.readTimeout = 10000
+
+            val responseCode = connection.responseCode
+            responseCode in 200..399
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
     }
 }
