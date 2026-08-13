@@ -1,38 +1,38 @@
 package com.example.abacustimer
 
+import android.content.Context
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.delay
 
-data class SessionLog(
-    val timeFormatted: String,
-    val total: Int,
-    val correct: Int,
-    val accuracy: String,
-    val speed: String
+// --- DATA CLASS FOR STORAGE ---
+data class SessionData(
+    val date: String,
+    val digits: Int,
+    val rows: Int,
+    val timeTaken: String,
+    val status: String
 )
 
 class MainActivity : ComponentActivity() {
@@ -44,290 +44,223 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    AbacusTimerApp()
+                    AbacusApp()
                 }
             }
         }
     }
 }
 
+// --- HELPER FUNCTIONS FOR LOCAL STORAGE ---
+fun saveSession(context: Context, session: SessionData) {
+    val prefs = context.getSharedPreferences("AbacusPrefs", Context.MODE_PRIVATE)
+    val gson = Gson()
+    val existingJson = prefs.getString("history", "[]")
+    val type = object : TypeToken>() {}.type
+    val history: MutableList = gson.fromJson(existingJson, type) ?: mutableListOf()
+    
+    history.add(0, session) // Add newest to the top
+    prefs.edit().putString("history", gson.toJson(history)).apply()
+}
+
+fun getHistory(context: Context): List {
+    val prefs = context.getSharedPreferences("AbacusPrefs", Context.MODE_PRIVATE)
+    val gson = Gson()
+    val existingJson = prefs.getString("history", "[]")
+    val type = object : TypeToken>() {}.type
+    return gson.fromJson(existingJson, type) ?: emptyList()
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AbacusTimerApp() {
+fun AbacusApp() {
+    var currentScreen by remember { mutableStateOf("Timer") }
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
 
-    var timeMillis by remember { mutableLongStateOf(0L) }
+    if (currentScreen == "Timer") {
+        TimerScreen(
+            onNavigateToHistory = { currentScreen = "History" },
+            onSessionComplete = { digits, rows, time, isCorrect ->
+                val dateFormat = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
+                val session = SessionData(
+                    date = dateFormat.format(Date()),
+                    digits = digits,
+                    rows = rows,
+                    timeTaken = time,
+                    status = if (isCorrect) "Correct" else "Wrong"
+                )
+                saveSession(context, session)
+            }
+        )
+    } else {
+        HistoryScreen(
+            onNavigateBack = { currentScreen = "Timer" }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TimerScreen(onNavigateToHistory: () -> Unit, onSessionComplete: (Int, Int, String, Boolean) -> Unit) {
+    var digits by remember { mutableIntStateOf(1) }
+    var rows by remember { mutableIntStateOf(5) }
     var isRunning by remember { mutableStateOf(false) }
+    var timeInSeconds by remember { mutableIntStateOf(0) }
+    var resultMessage by remember { mutableStateOf("") }
 
-    var totalQuestionsText by remember { mutableStateOf("20") }
-    var correctAnswersText by remember { mutableStateOf("18") }
-    var sheetUrl by remember { mutableStateOf("") }
-    var isSaving by remember { mutableStateOf(false) }
-
-    val historyList = remember { mutableStateListOf<SessionLog>() }
-
-    // Stopwatch loop
+    // Timer Logic
     LaunchedEffect(isRunning) {
         while (isRunning) {
-            delay(10)
-            timeMillis += 10
+            delay(1000)
+            timeInSeconds++
         }
     }
 
-    // Calculations
-    val totalSecs = timeMillis / 1000.0
-    val totalQ = totalQuestionsText.toIntOrNull() ?: 0
-    val correctQ = correctAnswersText.toIntOrNull() ?: 0
+    val minutes = timeInSeconds / 60
+    val seconds = timeInSeconds % 60
+    val timeString = String.format("%02d:%02d", minutes, seconds)
 
-    val accuracy = if (totalQ > 0) (correctQ.toDouble() / totalQ * 100).coerceAtMost(100.0) else 0.0
-    val avgSpeed = if (totalQ > 0 && totalSecs > 0) totalSecs / totalQ else 0.0
-    val qpm = if (totalSecs > 0) (totalQ / totalSecs) * 60 else 0.0
-
-    // Time formatting
-    val minutes = (timeMillis / 1000) / 60
-    val seconds = (timeMillis / 1000) % 60
-    val hundredths = (timeMillis % 1000) / 10
-    val timerDisplay = String.format(Locale.US, "%02d:%02d.%02d", minutes, seconds, hundredths)
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            text = "Abacus Performance Tracker",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Stopwatch Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = timerDisplay,
-                    fontSize = 42.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(
-                        onClick = { isRunning = !isRunning },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Text(if (isRunning) "Pause" else "Start")
-                    }
-
-                    OutlinedButton(onClick = {
-                        isRunning = false
-                        timeMillis = 0L
-                    }) {
-                        Text("Reset")
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Abacus Practice") },
+                actions = {
+                    IconButton(onClick = onNavigateToHistory) {
+                        Icon(Icons.Default.List, contentDescription = "History")
                     }
                 }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Input Fields
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            OutlinedTextField(
-                value = totalQuestionsText,
-                onValueChange = { totalQuestionsText = it },
-                label = { Text("Total Questions") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.weight(1f)
-            )
-
-            OutlinedTextField(
-                value = correctAnswersText,
-                onValueChange = { correctAnswersText = it },
-                label = { Text("Correct Answers") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.weight(1f)
             )
         }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Google Sheet URL Input
-        OutlinedTextField(
-            value = sheetUrl,
-            onValueChange = { sheetUrl = it },
-            label = { Text("Google Sheet Web App URL") },
-            placeholder = { Text("Paste Web App URL here") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Metrics Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.SpaceAround
-            ) {
-                MetricItem(label = "Accuracy", value = String.format(Locale.US, "%.1f%%", accuracy))
-                MetricItem(label = "Avg Speed", value = String.format(Locale.US, "%.2f s/q", avgSpeed))
-                MetricItem(label = "QPM", value = String.format(Locale.US, "%.1f", qpm))
+            Text(text = timeString, fontSize = 64.sp, fontWeight = FontWeight.Bold)
+            
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Digits: $digits", fontSize = 20.sp)
+                Spacer(modifier = Modifier.width(16.dp))
+                Button(onClick = { if (digits > 1) digits-- }) { Text("-") }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(onClick = { digits++ }) { Text("+") }
             }
-        }
 
-        Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-        // Save Button
-        Button(
-            onClick = {
-                if (totalQ > 0) {
-                    val accStr = String.format(Locale.US, "%.1f%%", accuracy)
-                    val speedStr = String.format(Locale.US, "%.2fs/q", avgSpeed)
-                    val qpmStr = String.format(Locale.US, "%.1f", qpm)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Rows: $rows", fontSize = 20.sp)
+                Spacer(modifier = Modifier.width(16.dp))
+                Button(onClick = { if (rows > 1) rows-- }) { Text("-") }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(onClick = { rows++ }) { Text("+") }
+            }
 
-                    // Save locally
-                    historyList.add(
-                        0,
-                        SessionLog(
-                            timeFormatted = timerDisplay,
-                            total = totalQ,
-                            correct = correctQ,
-                            accuracy = accStr,
-                            speed = speedStr
-                        )
-                    )
+            Spacer(modifier = Modifier.height(32.dp))
 
-                    // Sync to Google Sheet if URL provided
-                    if (sheetUrl.isNotBlank()) {
-                        isSaving = true
-                        coroutineScope.launch {
-                            val success = syncToGoogleSheet(
-                                webAppUrl = sheetUrl.trim(),
-                                time = timerDisplay,
-                                total = totalQ,
-                                correct = correctQ,
-                                accuracy = accStr,
-                                speed = speedStr,
-                                qpm = qpmStr
-                            )
-                            isSaving = false
-                            if (success) {
-                                Toast.makeText(context, "Saved to Google Sheet!", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(context, "Failed to save to Google Sheet", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    } else {
-                        Toast.makeText(context, "Saved locally (Paste Sheet URL to sync online)", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            },
-            enabled = !isSaving,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(if (isSaving) "Saving..." else "Save Session to Google Sheet")
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // History Log
-        Text(
-            text = "Session History",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.align(Alignment.Start)
-        )
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        LazyColumn(modifier = Modifier.fillMaxWidth()) {
-            items(historyList) { item ->
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp)
+            if (!isRunning) {
+                Button(
+                    onClick = {
+                        isRunning = true
+                        timeInSeconds = 0
+                        resultMessage = ""
+                    },
+                    modifier = Modifier.fillMaxWidth().height(50.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                    Text("Start Practice", fontSize = 18.sp)
+                }
+            } else {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    Button(
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)),
+                        onClick = {
+                            isRunning = false
+                            resultMessage = "Saved as Correct!"
+                            onSessionComplete(digits, rows, timeString, true)
+                        }
                     ) {
-                        Text("⏱ ${item.timeFormatted}", fontWeight = FontWeight.Bold)
-                        Text("Score: ${item.correct}/${item.total}")
-                        Text("Acc: ${item.accuracy}")
-                        Text("Speed: ${item.speed}")
+                        Text("Mark Correct")
+                    }
+                    Button(
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF44336)),
+                        onClick = {
+                            isRunning = false
+                            resultMessage = "Saved as Wrong."
+                            onSessionComplete(digits, rows, timeString, false)
+                        }
+                    ) {
+                        Text("Mark Wrong")
                     }
                 }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            if (resultMessage.isNotEmpty()) {
+                Text(text = resultMessage, fontSize = 18.sp, color = Color.Gray)
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MetricItem(label: String, value: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(text = label, style = MaterialTheme.typography.labelMedium)
-        Text(text = value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-    }
-}
+fun HistoryScreen(onNavigateBack: () -> Unit) {
+    val context = LocalContext.current
+    // Load history once when screen opens
+    val historyList = remember { getHistory(context) }
 
-// Background Network Request to Google Apps Script Web App
-suspend fun syncToGoogleSheet(
-    webAppUrl: String,
-    time: String,
-    total: Int,
-    correct: Int,
-    accuracy: String,
-    speed: String,
-    qpm: String
-): Boolean {
-    return withContext(Dispatchers.IO) {
-        try {
-            val queryParams = "time=${URLEncoder.encode(time, "UTF-8")}" +
-                    "&total=$total" +
-                    "&correct=$correct" +
-                    "&accuracy=${URLEncoder.encode(accuracy, "UTF-8")}" +
-                    "&speed=${URLEncoder.encode(speed, "UTF-8")}" +
-                    "&qpm=${URLEncoder.encode(qpm, "UTF-8")}"
-
-            val fullUrl = if (webAppUrl.contains("?")) "$webAppUrl&$queryParams" else "$webAppUrl?$queryParams"
-            val url = URL(fullUrl)
-            val connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "GET"
-            connection.instanceFollowRedirects = true
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-
-            val responseCode = connection.responseCode
-            responseCode in 200..399
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Session History") },
+                navigationIcon = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        if (historyList.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Text("No sessions saved yet.", fontSize = 18.sp, color = Color.Gray)
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(historyList) { session ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(text = session.date, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = session.status,
+                                    color = if (session.status == "Correct") Color(0xFF4CAF50) else Color(0xFFF44336),
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(text = "Configuration: ${session.digits} Digits x ${session.rows} Rows")
+                            Text(text = "Time Taken: ${session.timeTaken}")
+                        }
+                    }
+                }
+            }
         }
     }
 }
