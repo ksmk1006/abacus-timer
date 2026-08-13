@@ -20,7 +20,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -51,24 +50,28 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- HELPER FUNCTIONS FOR LOCAL STORAGE ---
+// --- HELPER FUNCTIONS FOR LOCAL STORAGE (FIXED FOR KOTLIN) ---
 fun saveSession(context: Context, session: SessionData) {
     val prefs = context.getSharedPreferences("AbacusPrefs", Context.MODE_PRIVATE)
     val gson = Gson()
     val existingJson = prefs.getString("history", "[]")
-    val type = object : TypeToken>() {}.type
-    val history: MutableList = gson.fromJson(existingJson, type) ?: mutableListOf()
+    
+    // We use Array::class.java to safely parse the JSON list without TypeToken errors
+    val historyArray = gson.fromJson(existingJson, Array<SessionData>::class.java) ?: emptyArray()
+    val history = historyArray.toMutableList()
     
     history.add(0, session) // Add newest to the top
     prefs.edit().putString("history", gson.toJson(history)).apply()
 }
 
-fun getHistory(context: Context): List {
+fun getHistory(context: Context): List<SessionData> {
     val prefs = context.getSharedPreferences("AbacusPrefs", Context.MODE_PRIVATE)
     val gson = Gson()
     val existingJson = prefs.getString("history", "[]")
-    val type = object : TypeToken>() {}.type
-    return gson.fromJson(existingJson, type) ?: emptyList()
+    
+    // We use Array::class.java to safely parse the JSON list without TypeToken errors
+    val historyArray = gson.fromJson(existingJson, Array<SessionData>::class.java) ?: emptyArray()
+    return historyArray.toList()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
