@@ -39,4 +39,6 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.02.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
+// Add Gson for saving local data
+    implementation("com.google.code.gson:gson:2.10.1")
 }
